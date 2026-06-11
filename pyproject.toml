@@ -1,0 +1,23 @@
+[project]
+name = "openarm-genesis-test"
+version = "0.1.0"
+description = "Add your description here"
+readme = "README.md"
+requires-python = ">=3.12"
+dependencies = [
+    "genesis-world",
+    "gs-nyx>=0.1.2",
+    "gs-nyx-plugin>=0.1.3",
+    "torch",
+    "torchvision",
+]
+
+[tool.uv.sources]
+genesis-world = { git = "https://github.com/Genesis-Embodied-AI/genesis-world.git" }
+torch = { index = "pytorch-cu129" }
+torchvision = { index = "pytorch-cu129" }
+
+[[tool.uv.index]]
+name = "pytorch-cu129"
+url = "https://download.pytorch.org/whl/cu129"
+explicit = true
