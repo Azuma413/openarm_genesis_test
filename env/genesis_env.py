@@ -1,7 +1,12 @@
 import gymnasium as gym
 import warnings
-from env.tasks.test import TestTask
 from env.tasks.simple_pick import SimplePickTask
+from env.tasks.openarm import OpenArmSimplePickTask
+
+try:
+    from env.tasks.test import TestTask
+except ModuleNotFoundError:
+    TestTask = None
 
 class GenesisEnv(gym.Env):
 
@@ -91,11 +96,15 @@ class GenesisEnv(gym.Env):
         elif self.task == "simple_pick":
             return self._env.color
             # return f"Pick up a {self._env.color} cube."
+        elif self.task == "openarm":
+            return self._env.color
         else:
             raise NotImplementedError(f"Task {self.task} is not implemented.")
 
     def _make_env_task(self):
         if self.task == "test":
+            if TestTask is None:
+                raise NotImplementedError("Task 'test' is not available because env.tasks.test was not found.")
             task = TestTask(
                 observation_height=self.observation_height,
                 observation_width=self.observation_width,
@@ -103,6 +112,12 @@ class GenesisEnv(gym.Env):
             )
         elif self.task == "simple_pick":
             task = SimplePickTask(
+                observation_height=self.observation_height,
+                observation_width=self.observation_width,
+                show_viewer=self.show_viewer,
+            )
+        elif self.task == "openarm":
+            task = OpenArmSimplePickTask(
                 observation_height=self.observation_height,
                 observation_width=self.observation_width,
                 show_viewer=self.show_viewer,

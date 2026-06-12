@@ -5,7 +5,7 @@ import random
 import torch
 from scipy.spatial.transform import Rotation
 
-USE_NYX = False
+USE_NYX = True
 
 if USE_NYX:
     from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
@@ -51,7 +51,7 @@ class SimplePickTask:
     def _build_scene(self, show_viewer):
         # Genesis初期化の安全チェック
         if not gs._initialized:
-            gs.init(backend=gs.cpu, precision="32", debug=False, logging_level="ERROR")
+            gs.init(backend=gs.gpu, precision="32", debug=False, logging_level="ERROR")
 
         # シーンを初期化
         self.scene = gs.Scene(
@@ -246,6 +246,8 @@ class SimplePickTask:
         return obs
 
     def save_videos(self, file_name, fps=30):
+        if USE_NYX:
+            return
         self.front_cam.stop_recording(save_to_filename=f"{file_name}_front.mp4", fps=fps)
         self.eef_cam.stop_recording(save_to_filename=f"{file_name}_eef.mp4", fps=fps)
 
@@ -273,13 +275,15 @@ class SimplePickTask:
         return camera.render()[0]
 
     def _start_camera_recording(self, camera):
+        if USE_NYX:
+            return
         if hasattr(camera, "start_recording"):
             camera.start_recording()
 
 if __name__ == "__main__":
     import cv2
     import time
-    gs.init(backend=gs.cpu, precision="32")
+    gs.init(backend=gs.gpu, precision="32")
     task = SimplePickTask(observation_height=512, observation_width=512, show_viewer=False)
     task.reset()
     for _ in range(10):
