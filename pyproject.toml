@@ -8,6 +8,7 @@ dependencies = [
     "genesis-world",
     "gs-nyx>=0.1.2",
     "gs-nyx-plugin>=0.1.3",
+    "gymnasium>=1.3.0",
     "torch",
     "torchvision",
 ]
