@@ -1,5 +1,7 @@
 import os
 import random
+import re
+import tempfile
 
 import genesis as gs
 import numpy as np
@@ -7,7 +9,7 @@ import torch
 from gymnasium import spaces
 from scipy.spatial.transform import Rotation
 
-USE_NYX = False
+USE_NYX = True
 
 if USE_NYX:
     from gs_nyx_plugin.nyx_camera_options import NyxCameraOptions
@@ -68,14 +70,27 @@ JOINT_UPPER = {
     "openarm_right_finger_joint2": 1.5708,
 }
 
-WRIST_OFFSET_T = np.array(
-    [
-        [0.624695, -0.480604, 0.615457, 0.10],
-        [-0.780869, -0.384483, 0.492366, 0.08],
-        [0.000000, -0.788170, -0.615457, 0.00],
-        [0.000000, 0.000000, 0.000000, 1.00],
-    ],
-    dtype=np.float64,
+def _camera_look_at_transform(eye, target, up_hint):
+    eye = np.asarray(eye, dtype=np.float64)
+    target = np.asarray(target, dtype=np.float64)
+    up_hint = np.asarray(up_hint, dtype=np.float64)
+
+    z_axis = eye - target
+    z_axis /= np.linalg.norm(z_axis)
+    x_axis = np.cross(up_hint, z_axis)
+    x_axis /= np.linalg.norm(x_axis)
+    y_axis = np.cross(z_axis, x_axis)
+
+    transform = np.eye(4, dtype=np.float64)
+    transform[:3, :3] = np.column_stack([x_axis, y_axis, z_axis])
+    transform[:3, 3] = eye
+    return transform
+
+
+EEF_CAMERA_OFFSET_T = _camera_look_at_transform(
+    eye=(0.20, 0.00, 0.07),
+    target=(0.04, 0.00, -0.13),
+    up_hint=(0.0, 1.0, 0.0),
 )
 
 
@@ -107,7 +122,7 @@ class OpenArmSimplePickTask:
         self.plane = self.scene.add_entity(morph=gs.morphs.Plane())
         self.openarm = self.scene.add_entity(
             gs.morphs.URDF(
-                file=OPENARM_URDF,
+                file=self._get_urdf_path(),
                 fixed=True,
                 merge_fixed_links=False,
                 convexify=False,
@@ -150,18 +165,31 @@ class OpenArmSimplePickTask:
                 render_mode=npr.ERenderMode.FastPathTracer,
                 lights=lights,
             ))
-            self.eef_cam = self.scene.add_sensor(NyxCameraOptions(
+            self.eef_cam0 = self.scene.add_sensor(NyxCameraOptions(
                 res=(self.observation_width, self.observation_height),
-                fov=60.0,
+                fov=75.0,
                 near=0.02,
                 far=50.0,
                 entity_idx=self.openarm.idx,
-                link_idx_local=self.right_eef.idx_local,
-                offset_T=WRIST_OFFSET_T,
+                link_idx_local=self.left_eef.idx_local,
+                offset_T=EEF_CAMERA_OFFSET_T,
                 spp=32,
                 render_mode=npr.ERenderMode.FastPathTracer,
                 lights=lights,
             ))
+            self.eef_cam1 = self.scene.add_sensor(NyxCameraOptions(
+                res=(self.observation_width, self.observation_height),
+                fov=75.0,
+                near=0.02,
+                far=50.0,
+                entity_idx=self.openarm.idx,
+                link_idx_local=self.right_eef.idx_local,
+                offset_T=EEF_CAMERA_OFFSET_T,
+                spp=32,
+                render_mode=npr.ERenderMode.FastPathTracer,
+                lights=lights,
+            ))
+            self.eef_cam = self.eef_cam1
             self._eef_cam_attached = True
         else:
             self.front_cam = self.scene.add_camera(
@@ -171,13 +199,21 @@ class OpenArmSimplePickTask:
                 fov=35,
                 GUI=False,
             )
-            self.eef_cam = self.scene.add_camera(
+            self.eef_cam0 = self.scene.add_camera(
+                res=(self.observation_width, self.observation_height),
+                pos=(0.25, 0.15, 0.45),
+                lookat=(0.25, 0.0, 0.05),
+                fov=50,
+                GUI=False,
+            )
+            self.eef_cam1 = self.scene.add_camera(
                 res=(self.observation_width, self.observation_height),
                 pos=(0.25, -0.15, 0.45),
                 lookat=(0.25, 0.0, 0.05),
                 fov=50,
                 GUI=False,
             )
+            self.eef_cam = self.eef_cam1
 
         self.scene.build()
         self.dof_indices = np.array([self.openarm.get_joint(name).dof_idx_local for name in joints_name])
@@ -195,10 +231,42 @@ class OpenArmSimplePickTask:
             "observation.images.front": spaces.Box(
                 low=0, high=255, shape=(self.observation_height, self.observation_width, 3), dtype=np.uint8
             ),
-            "observation.images.eef": spaces.Box(
+            "observation.images.eef_cam0": spaces.Box(
+                low=0, high=255, shape=(self.observation_height, self.observation_width, 3), dtype=np.uint8
+            ),
+            "observation.images.eef_cam1": spaces.Box(
                 low=0, high=255, shape=(self.observation_height, self.observation_width, 3), dtype=np.uint8
             ),
         })
+
+    def _get_urdf_path(self):
+        if not USE_NYX:
+            return OPENARM_URDF
+
+        description_root = os.path.dirname(OPENARM_URDF)
+        with open(OPENARM_URDF, "r", encoding="utf-8") as f:
+            urdf = f.read()
+
+        urdf = urdf.replace("package://openarm_description/", f"{description_root}/")
+        urdf = urdf.replace(
+            "assets/robot/openarm_v2.0/meshes/body/visual/body_link0.dae",
+            "assets/robot/openarm_v2.0/meshes/body/visual/body_link0.stl",
+        )
+        urdf = re.sub(
+            r"assets/robot/openarm_v2\.0/meshes/arm/visual/([^\"/]+)\.dae",
+            r"assets/robot/openarm_v2.0/meshes/arm/collision/\1.stl",
+            urdf,
+        )
+        urdf = re.sub(
+            r"assets/end_effector/pinch_gripper/meshes/visual/([^\"/]+)\.dae",
+            r"assets/end_effector/pinch_gripper/meshes/collision/\1.stl",
+            urdf,
+        )
+
+        path = os.path.join(tempfile.gettempdir(), "openarm_output_nyx.urdf")
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(urdf)
+        return path
 
     def _make_default_qpos(self):
         qpos = np.zeros(self.openarm.n_dofs, dtype=np.float32)
@@ -249,7 +317,8 @@ class OpenArmSimplePickTask:
 
         self.scene.step()
         self._start_camera_recording(self.front_cam)
-        self._start_camera_recording(self.eef_cam)
+        self._start_camera_recording(self.eef_cam0)
+        self._start_camera_recording(self.eef_cam1)
         return self.get_obs(), {}
 
     def seed(self, seed):
@@ -303,31 +372,39 @@ class OpenArmSimplePickTask:
 
         front_pixels = self._read_camera_rgb(self.front_cam)
         assert front_pixels.ndim == 3, f"front_pixels shape {front_pixels.shape} is not 3D (H, W, 3)"
-        eef_pixels = self._read_camera_rgb(self.eef_cam)
-        assert eef_pixels.ndim == 3, f"eef_pixels shape {eef_pixels.shape} is not 3D (H, W, 3)"
+        eef_pixels0 = self._read_camera_rgb(self.eef_cam0)
+        assert eef_pixels0.ndim == 3, f"eef_pixels0 shape {eef_pixels0.shape} is not 3D (H, W, 3)"
+        eef_pixels1 = self._read_camera_rgb(self.eef_cam1)
+        assert eef_pixels1.ndim == 3, f"eef_pixels1 shape {eef_pixels1.shape} is not 3D (H, W, 3)"
         return {
             "agent_pos": agent_pos,
             "observation.images.front": front_pixels,
-            "observation.images.eef": eef_pixels,
+            "observation.images.eef_cam0": eef_pixels0,
+            "observation.images.eef_cam1": eef_pixels1,
         }
 
     def save_videos(self, file_name, fps=30):
         if USE_NYX:
             return
         self.front_cam.stop_recording(save_to_filename=f"{file_name}_front.mp4", fps=fps)
-        self.eef_cam.stop_recording(save_to_filename=f"{file_name}_eef.mp4", fps=fps)
+        self.eef_cam0.stop_recording(save_to_filename=f"{file_name}_eef_cam0.mp4", fps=fps)
+        self.eef_cam1.stop_recording(save_to_filename=f"{file_name}_eef_cam1.mp4", fps=fps)
 
     def close(self):
         gs.destroy()
 
     def _set_eef_cam_pos(self):
-        eef_pos = self.right_eef.get_pos().cpu().numpy()
-        eef_rot = self.right_eef.get_quat().cpu().numpy()
+        self._set_link_cam_pos(self.eef_cam0, self.left_eef)
+        self._set_link_cam_pos(self.eef_cam1, self.right_eef)
+
+    def _set_link_cam_pos(self, camera, link):
+        eef_pos = link.get_pos().cpu().numpy()
+        eef_rot = link.get_quat().cpu().numpy()
         eef_rot = eef_rot[[1, 2, 3, 0]]
         eef_transform = np.eye(4)
         eef_transform[:3, :3] = Rotation.from_quat(eef_rot).as_matrix()
         eef_transform[:3, 3] = eef_pos
-        self.eef_cam.set_pose(transform=eef_transform @ WRIST_OFFSET_T)
+        camera.set_pose(transform=eef_transform @ EEF_CAMERA_OFFSET_T)
 
     def _read_camera_rgb(self, camera):
         if USE_NYX and hasattr(camera, "read"):
@@ -356,5 +433,6 @@ if __name__ == "__main__":
         action = np.random.uniform(-1.0, 1.0, size=(AGENT_DIM,))
         obs, _, _, _, _ = task.step(action)
         cv2.imwrite("openarm_front_image.png", obs["observation.images.front"])
-        cv2.imwrite("openarm_eef_image.png", obs["observation.images.eef"])
+        cv2.imwrite("openarm_eef_cam0_image.png", obs["observation.images.eef_cam0"])
+        cv2.imwrite("openarm_eef_cam1_image.png", obs["observation.images.eef_cam1"])
         time.sleep(1.0)
